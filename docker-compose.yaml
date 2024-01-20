@@ -1,0 +1,215 @@
+version: '3'
+services:
+  # log analyzer
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.8.1
+    container_name: elasticsearch
+    restart: on-failure
+    networks:
+      - elastic
+    ports:
+      - 9200:9200
+      - 9300:9300
+    volumes:
+      - ./elk/elasticsearch/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    environment:
+      - discovery.type=single-node
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.8.1
+    container_name: kibana
+    restart: on-failure
+    networks:
+      - elastic
+    volumes:
+      - kibanadata:/usr/share/kibana/data
+    ports:
+      - 5601:5601
+    environment:
+      - SERVERNAME=kibana
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.8.1
+    container_name: logstash
+    restart: on-failure
+    networks:
+      - elastic
+      - gdb_testing
+    ports:
+      - 5044:5044
+      - 5045:5045
+    volumes:
+      - ./elk/logstash/config:/usr/share/logstash/config/
+      - ./elk/logstash/pipeline:/usr/share/logstash/pipeline/
+  # databases
+  neo4j:
+    image: neo4j:5.12.0-enterprise
+    restart: on-failure
+    depends_on:
+      - kibana
+      - logstash
+      - elasticsearch
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    ports:
+      - 7474:7474
+      - 7687:7687
+    networks:
+      - gdb_testing
+    environment:
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+      - NEO4J_AUTH=neo4j/testtest
+      - NEO4J_db_transaction_timeout=60000
+
+  redis-stack:
+    image: redis/redis-stack:6.2.6-v7
+    restart: on-failure
+    ports:
+      - 6380:6379
+    depends_on:
+      - kibana
+      - logstash
+      - elasticsearch
+    environment:
+      - REDISGRAPH_ARGS=MAX_QUEUED_QUERIES 25 TIMEOUT 10000 RESULTSET_SIZE 10000 QUERY_MEM_CAPACITY 1048576
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    networks:
+      - gdb_testing
+
+  memgraph:
+    image: memgraph/memgraph-platform:latest
+    restart: on-failure
+    depends_on:
+      - kibana
+      - logstash
+      - elasticsearch
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    networks:
+      - gdb_testing
+    tty: true
+    ports:
+      - 3000:3000
+      - 7688:7687
+  tinkerpop:
+    image: tinkerpop/gremlin-server:3.6
+    restart: on-failure
+    depends_on:
+      - kibana
+      - logstash
+      - elasticsearch
+    entrypoint: ["/bin/sleep"]
+    command: ["infinity"]
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    networks:
+      - gdb_testing
+    tty: true
+    ports:
+      - 8182:8182
+
+  redis_client:
+    image: pt
+    working_dir: /appdata
+    restart: on-failure
+    tty: true
+    depends_on:
+      - redis-stack
+    networks:
+      - gdb_testing
+    volumes:
+      - ./:/appdata
+    entrypoint: [ "bash", "./scripts/run_redis.sh" ]
+
+  memgraph_client:
+    image: pt
+    working_dir: /appdata
+    tty: true
+    restart: on-failure
+    depends_on:
+      - memgraph
+    networks:
+      - gdb_testing
+    volumes:
+      - ./:/appdata
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    entrypoint: [ "bash", "./scripts/run_memgraph.sh" ]
+
+  neo4j_client:
+    image: pt
+    working_dir: /appdata
+    tty: true
+    restart: on-failure
+    depends_on:
+      - neo4j
+    networks:
+      - gdb_testing
+    volumes:
+      - ./:/appdata
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    entrypoint: [ "bash", "./scripts/run_neo4j.sh" ]
+  nebula_client:
+    image: pt
+    working_dir: /appdata
+    restart: on-failure
+    networks:
+      - gdb_testing
+    volumes:
+      - ./:/appdata
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    entrypoint: [ "bash", "./scripts/run_nebula.sh" ]
+
+  tinkerpop_client:
+    image: pt
+    working_dir: /appdata
+    tty: true
+    restart: on-failure
+    networks:
+      - gdb_testing
+    volumes:
+      - ./:/appdata
+    depends_on:
+      - cypher2gremlin
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    entrypoint: [ "bash", "./scripts/run_tinkerpop.sh" ]
+
+  cypher2gremlin:
+    build: cypher2gremlin
+    networks:
+      - gdb_testing
+    ports:
+      - 8085:8080
+
+networks:
+  elastic:
+  gdb_testing:
+    external: true
+
+volumes:
+  kibanadata:
+  elasticsearch_data:
